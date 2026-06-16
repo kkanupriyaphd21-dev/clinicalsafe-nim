@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: clinicalsafe-nim-backend
+    runtime: docker
+    repo: https://github.com/kkanupriyaphd21-dev/clinicalsafe-nim
+    dockerfilePath: ./backend/Dockerfile
+    envVars:
+      - key: NIM_BACKEND_URL
+        value: https://clinicalsafe-nim-backend.onrender.com
+    healthCheckPath: /health
+    plan: free
