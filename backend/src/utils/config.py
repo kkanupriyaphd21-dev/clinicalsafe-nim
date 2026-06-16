@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     )
 
     master_key: str | None = None
+    admin_api_key: str | None = None
     database_url: str = "sqlite:///data/clinicalsafe_nim.db"
     nvidia_api_key: str | None = None
     nvidia_nim_base_url: str = "https://integrate.api.nvidia.com/v1"

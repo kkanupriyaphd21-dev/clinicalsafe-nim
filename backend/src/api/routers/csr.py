@@ -20,9 +20,14 @@ from src.api.csr_docx_builder import (
     build_csr_audit_log,
 )
 from src.data_processing.csr_parser import CSRParser
-from src.models.database import get_db
+from src.models.database import get_db, SessionLocal
 from src.models.schemas import CSRProgress, CSRTaskResponse
 from src.services.csr_synthesizer import CSRNIMSynthesizer, CSRSummaryResult
+from src.services.csr_quality_checks import run_quality_checks
+
+import asyncio
+import json
+from src.models.database import get_db, SessionLocal, CSRTask
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +35,6 @@ router = APIRouter(prefix="/csr", tags=["CSR Pipeline"])
 
 CSR_CACHE_DIR = Path(tempfile.gettempdir()) / "clinicalsafe_nim_csr_cache"
 CSR_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
-_csr_tasks: Dict[str, Dict] = {}
-_csr_tasks_lock = threading.Lock()
 
 
 class ProgressTracker:
@@ -46,12 +48,41 @@ class ProgressTracker:
         self.start_time = time.time()
         self.result_data = None
         self.error = None
+        self._write_to_db()
+
+    def _write_to_db(self):
+        elapsed = time.time() - self.start_time
+        progress = self.current / max(self.total, 1) if self.total > 0 else 0
+        eta = round((elapsed / max(progress, 0.001)) * max(1 - progress, 0), 1) if progress > 0 else 0
+        
+        with SessionLocal() as db:
+            task = db.query(CSRTask).filter(CSRTask.id == self.task_id).first()
+            if not task:
+                task = CSRTask(id=self.task_id)
+                db.add(task)
+            
+            task.status = self.status
+            task.stage = self.stage
+            task.progress = round(min(progress, 1.0), 4)
+            task.current = self.current
+            task.total = self.total
+            task.message = self.message
+            task.elapsed_seconds = round(elapsed, 1)
+            task.eta_seconds = eta
+            
+            if self.status == "complete" and self.result_data:
+                task.result_data = json.dumps(self.result_data)
+            if self.error:
+                task.error_message = self.error
+                
+            db.commit()
 
     def update(self, stage: str, current: int, total: int, message: str):
         self.stage = stage
         self.current = current
         self.total = total
         self.message = message
+        self._write_to_db()
 
     def succeed(self, result_data: dict):
         self.status = "complete"
@@ -60,12 +91,14 @@ class ProgressTracker:
         self.total = self.total or 1
         self.message = "Complete"
         self.result_data = result_data
+        self._write_to_db()
 
     def fail(self, error: str):
         self.status = "error"
         self.stage = "error"
         self.message = error
         self.error = error
+        self._write_to_db()
 
     def to_dict(self) -> Dict:
         elapsed = time.time() - self.start_time
@@ -162,7 +195,7 @@ async def start_csr(
             tracker.update("parsing", 0, total_tables_all, f"Found {len(doc.sections)} sections, {total_tables_all} tables")
 
             synthesizer = CSRNIMSynthesizer(
-                db=db,
+                session_factory=SessionLocal,
                 model=model,
                 max_workers=max_workers,
                 max_tokens=max_tokens,
@@ -176,6 +209,8 @@ async def start_csr(
             total_ms = round((time.time() - tracker.start_time) * 1000, 2)
             download_token = _save_csr_cache(summary)
 
+            quality_report = run_quality_checks(summary)
+
             result = {
                 "filename": summary.filename,
                 "total_pages": summary.total_pages,
@@ -188,6 +223,7 @@ async def start_csr(
                 "document_synthesis": summary.document_synthesis,
                 "sections": [s.to_dict() for s in summary.sections],
                 "download_token": download_token,
+                "quality_report": quality_report.to_dict(),
             }
             tracker.succeed(result)
         except Exception as e:
@@ -208,23 +244,37 @@ async def start_csr(
 
 
 @router.get("/progress/{task_id}")
-async def get_csr_progress(task_id: str):
-    with _csr_tasks_lock:
-        tracker = _csr_tasks.get(task_id)
-    if tracker is None:
+async def get_csr_progress(task_id: str, db: Session = Depends(get_db)):
+    task = db.query(CSRTask).filter(CSRTask.id == task_id).first()
+    if task is None:
         raise HTTPException(status_code=404, detail="Task not found or already expired")
-    return tracker.to_dict()
+    
+    result = {
+        "status": task.status,
+        "stage": task.stage,
+        "progress": task.progress,
+        "current": task.current,
+        "total": task.total,
+        "message": task.message,
+        "elapsed_seconds": task.elapsed_seconds,
+        "eta_seconds": task.eta_seconds,
+    }
+    if task.result_data:
+        result["result"] = json.loads(task.result_data)
+    if task.error_message:
+        result["error"] = task.error_message
+    return result
 
 
 @router.get("/download/{token}")
 async def download_csr_docx(token: str):
-    summary = _load_csr_cache(token)
+    summary = await asyncio.to_thread(_load_csr_cache, token)
     if summary is None:
         raise HTTPException(
             status_code=404,
             detail="CSR result not found or expired. Please re-upload the PDF.",
         )
-    docx_bytes = build_csr_docx(summary)
+    docx_bytes = await asyncio.to_thread(build_csr_docx, summary)
     return Response(
         content=docx_bytes,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -239,13 +289,13 @@ async def download_csr_docx(token: str):
 
 @router.get("/download/{token}/qc")
 async def download_csr_qc_report(token: str):
-    summary = _load_csr_cache(token)
+    summary = await asyncio.to_thread(_load_csr_cache, token)
     if summary is None:
         raise HTTPException(
             status_code=404,
             detail="CSR result not found or expired. Please re-upload the PDF.",
         )
-    docx_bytes = build_csr_qc_report_docx(summary)
+    docx_bytes = await asyncio.to_thread(build_csr_qc_report_docx, summary)
     return Response(
         content=docx_bytes,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -260,13 +310,13 @@ async def download_csr_qc_report(token: str):
 
 @router.get("/download/{token}/audit")
 async def download_csr_audit_log(token: str):
-    summary = _load_csr_cache(token)
+    summary = await asyncio.to_thread(_load_csr_cache, token)
     if summary is None:
         raise HTTPException(
             status_code=404,
             detail="CSR result not found or expired. Please re-upload the PDF.",
         )
-    audit_json = build_csr_audit_log(summary)
+    audit_json = await asyncio.to_thread(build_csr_audit_log, summary)
     return Response(
         content=audit_json,
         media_type="application/json",

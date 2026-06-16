@@ -58,12 +58,26 @@ export interface HealthResponse {
 }
 
 async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
+  const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+  const headers: Record<string, string> = {
+    ...(options?.headers as Record<string, string> || {}),
+  };
+
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
-    headers: {
-      ...(options?.headers || {}),
-    },
+    headers,
   });
+
+  if (res.status === 401 && typeof window !== "undefined" && window.location.pathname !== "/login") {
+    localStorage.removeItem("token");
+    localStorage.removeItem("username");
+    window.location.href = "/login";
+  }
+
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     throw new Error((data as { detail?: string }).detail || res.statusText);
@@ -73,6 +87,15 @@ async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
 
 export const api = {
   health: () => fetchJson<HealthResponse>("/health"),
+
+  login: (data: { username: string; password?: string }) =>
+    fetchJson<{ token: string; username: string }>("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    }),
+
+  me: () => fetchJson<{ id: string; username: string }>("/auth/me"),
 
   listKeys: () => fetchJson<{ keys: APIKey[] }>("/keys"),
   createKey: (data: { name: string; key: string; is_default?: boolean }) =>
@@ -113,12 +136,24 @@ export const api = {
   getCSRProgress: (taskId: string) =>
     fetchJson<CSRProgress>(`/csr/progress/${taskId}`),
 
-  downloadCSRDocx: (token: string) =>
-    fetch(`${API_BASE}/csr/download/${token}`),
+  downloadCSRDocx: (token: string) => {
+    const userToken = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+    return fetch(`${API_BASE}/csr/download/${token}`, {
+      headers: userToken ? { "Authorization": `Bearer ${userToken}` } : {},
+    });
+  },
 
-  downloadCSRQcReport: (token: string) =>
-    fetch(`${API_BASE}/csr/download/${token}/qc`),
+  downloadCSRQcReport: (token: string) => {
+    const userToken = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+    return fetch(`${API_BASE}/csr/download/${token}/qc`, {
+      headers: userToken ? { "Authorization": `Bearer ${userToken}` } : {},
+    });
+  },
 
-  downloadCSRAuditLog: (token: string) =>
-    fetch(`${API_BASE}/csr/download/${token}/audit`),
+  downloadCSRAuditLog: (token: string) => {
+    const userToken = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+    return fetch(`${API_BASE}/csr/download/${token}/audit`, {
+      headers: userToken ? { "Authorization": `Bearer ${userToken}` } : {},
+    });
+  },
 };

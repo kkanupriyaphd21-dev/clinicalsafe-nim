@@ -125,16 +125,22 @@ class NIMClient:
                     )
                     last_error = NIMClientError("NVIDIA NIM: Payment required — check API credits")
                 elif resp.status_code == 429:
-                    logger.warning(f"Key {record.id} rate limited; trying next key.")
+                    retry_after = 60
+                    try:
+                        retry_after = int(resp.headers.get("Retry-After", 60))
+                    except Exception:
+                        pass
+                    logger.warning(f"Key {record.id} rate limited; placing on cool-down for {retry_after}s.")
+                    self.vault.cooldown_key(record.id, retry_after)
                     self.tracker.log_event(
                         api_key_id=record.id,
                         endpoint=endpoint_label,
                         model=model,
                         status="rate_limited",
                         latency_ms=latency_ms,
-                        error_message="429 Rate limited",
+                        error_message=f"429 Rate limited (Retry-After: {retry_after}s)",
                     )
-                    last_error = NIMClientError("NVIDIA NIM: Rate limited — try again later")
+                    last_error = NIMClientError(f"NVIDIA NIM: Rate limited (Retry-After: {retry_after}s) — try again later")
                 else:
                     text = resp.text
                     self.tracker.log_event(

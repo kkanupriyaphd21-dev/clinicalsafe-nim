@@ -61,9 +61,13 @@ class KeyVault:
         return decrypt_value(record.encrypted_key, settings.master_key)
 
     def get_active_keys(self) -> List[APIKey]:
+        now = datetime.now(timezone.utc)
         return (
             self.db.query(APIKey)
-            .filter(APIKey.is_active == True)
+            .filter(
+                APIKey.is_active == True,
+                (APIKey.cooldown_until == None) | (APIKey.cooldown_until <= now)
+            )
             .order_by(APIKey.is_default.desc(), APIKey.created_at.asc())
             .all()
         )
@@ -140,5 +144,13 @@ class KeyVault:
         record = self.db.query(APIKey).filter(APIKey.id == key_id).first()
         if record:
             record.is_active = False
+            record.updated_at = datetime.now(timezone.utc)
+            self.db.commit()
+
+    def cooldown_key(self, key_id: str, cooldown_seconds: int) -> None:
+        record = self.db.query(APIKey).filter(APIKey.id == key_id).first()
+        if record:
+            from datetime import timedelta
+            record.cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=cooldown_seconds)
             record.updated_at = datetime.now(timezone.utc)
             self.db.commit()

@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.api.routers import csr, keys, summarize
+from src.api.routers import csr, keys, summarize, auth
 from src.models.database import init_db
 from src.services.key_vault import KeyVault
 from src.utils.config import settings
@@ -27,7 +27,29 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     init_db()
     _seed_default_key()
+    _seed_default_user()
     yield
+
+
+def _seed_default_user():
+    """Seed a default admin user if no users exist in database."""
+    try:
+        from src.models.database import SessionLocal, User
+        from src.utils.auth import hash_password
+
+        db = SessionLocal()
+        existing = db.query(User).first()
+        if not existing:
+            admin_user = User(
+                username="admin",
+                hashed_password=hash_password("admin"),
+            )
+            db.add(admin_user)
+            db.commit()
+            logger.info("Seeded default admin user (username: admin, password: admin)")
+        db.close()
+    except Exception as e:
+        logger.warning(f"Failed to seed default user: {e}")
 
 
 def _seed_default_key():
@@ -74,6 +96,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth.router)
 app.include_router(keys.router)
 app.include_router(summarize.router)
 app.include_router(csr.router)

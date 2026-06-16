@@ -193,7 +193,8 @@ class CSRSummaryResult:
 class CSRNIMSynthesizer:
     def __init__(
         self,
-        db: Session,
+        db: Optional[Session] = None,
+        session_factory = None,
         model: Optional[str] = None,
         max_workers: int = 5,
         max_tokens: int = 1024,
@@ -207,6 +208,13 @@ class CSRNIMSynthesizer:
         self.temperature = temperature
         self.study_metadata = study_metadata or {}
         self._guardian = CSRConsistencyGuardian()
+        
+        # Setup session_factory for thread safety
+        if session_factory is None:
+            from src.models.database import SessionLocal
+            self.session_factory = SessionLocal
+        else:
+            self.session_factory = session_factory
 
     def summarize_table(self, table: CSRTable) -> TableSummaryResult:
         start = time.time()
@@ -223,8 +231,15 @@ class CSRNIMSynthesizer:
         statistical_method = self._statistical_method_for_table(table)
         last_exc = None
         for attempt in range(3):
+            db = None
             try:
-                gen = NIMGenerator(self.db, model=self.model)
+                # Thread-safe session creation
+                if self.session_factory:
+                    db = self.session_factory()
+                else:
+                    db = self.db
+
+                gen = NIMGenerator(db, model=self.model)
                 result = gen.generate(
                     table_text=table.linearized,
                     table_type=table.table_type,
@@ -256,6 +271,9 @@ class CSRNIMSynthesizer:
                 logger.warning(f"NIM summarization attempt {attempt+1}/3 failed for {table.table_id}: {e}")
                 if attempt < 2:
                     time.sleep(5)
+            finally:
+                if self.session_factory and db:
+                    db.close()
         elapsed = round((time.time() - start) * 1000, 2)
         logger.error(f"NIM summarization failed after 3 attempts for {table.table_id}: {last_exc}")
         return TableSummaryResult(

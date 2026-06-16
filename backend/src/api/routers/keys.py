@@ -9,7 +9,13 @@ from src.models.database import get_db
 from src.models.schemas import APIKeyCreate, APIKeyList, APIKeyPublic, APIKeyUpdate
 from src.services.key_vault import KeyVault
 
-router = APIRouter(prefix="/keys", tags=["API Keys"])
+from src.api.dependencies import verify_admin_key
+
+router = APIRouter(
+    prefix="/keys",
+    tags=["API Keys"],
+    dependencies=[Depends(verify_admin_key)]
+)
 
 
 def _vault(db: Session = Depends(get_db)) -> KeyVault:

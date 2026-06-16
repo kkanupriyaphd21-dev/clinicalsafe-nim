@@ -88,3 +88,23 @@ class HealthResponse(BaseModel):
     active_keys: int
     total_keys: int
     default_model: str
+
+
+# ── Auth ─────────────────────────────────────────────────────────────────────
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    token: str
+    username: str
+
+
+class UserResponse(BaseModel):
+    id: str
+    username: str
+
+    class Config:
+        from_attributes = True
