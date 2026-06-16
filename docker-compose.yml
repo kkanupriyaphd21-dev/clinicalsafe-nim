@@ -1,0 +1,50 @@
+version: "3.9"
+
+services:
+  nim-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: clinicalsafe-nim-backend
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - MASTER_KEY=${MASTER_KEY}
+      - DATABASE_URL=${DATABASE_URL:-sqlite:///data/clinicalsafe_nim.db}
+      - NVIDIA_NIM_BASE_URL=${NVIDIA_NIM_BASE_URL:-https://integrate.api.nvidia.com/v1}
+      - NIM_DEFAULT_MODEL=${NIM_DEFAULT_MODEL:-meta/llama-3.3-70b-instruct}
+      - NIM_TIMEOUT_SECONDS=${NIM_TIMEOUT_SECONDS:-60}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: clinicalsafe-nim-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_BASE_URL=/api/nim
+    restart: unless-stopped
+    depends_on:
+      - nim-backend
+
+  nginx:
+    image: nginx:alpine
+    container_name: clinicalsafe-nim-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - frontend
+      - nim-backend
+    restart: unless-stopped
